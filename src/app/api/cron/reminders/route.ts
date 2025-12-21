@@ -3,22 +3,28 @@ import { createClient } from "@supabase/supabase-js";
 import { Resend } from "resend";
 
 /**
- * Erwartete ENV-Variablen:
+ * Erwartete ENV-Variablen (Vercel + lokal):
  * - NEXT_PUBLIC_SUPABASE_URL = https://xxxx.supabase.co
- * - NEXT_PUBLIC_SUPABASE_ANON_KEY = sb_publishable_...
- * - SUPABASE_SERVICE_ROLE_KEY = sb_secret_...
+ * - NEXT_PUBLIC_SUPABASE_ANON_KEY = sb_publishable_...   (nur fürs Frontend, hier nur Diagnose)
+ * - SUPABASE_SERVICE_ROLE_KEY = sb_secret_...            (Server only)
  * - RESEND_API_KEY = re_...
- * - MAIL_FROM = Studienteam <onboarding@resend.dev>
- * - APP_BASE_URL = http://localhost:3000
+ * - MAIL_FROM = Studienteam <onboarding@resend.dev>      (oder eigene verified domain)
+ * - APP_BASE_URL = https://deinprojekt.vercel.app
  * - CRON_SECRET = study_cron_2025_secure
  */
 
 function fmt(dateIso: string) {
+  // Nur Datum + Startzeit (wie du es wolltest)
   return new Date(dateIso).toLocaleString("de-CH", {
     dateStyle: "short",
     timeStyle: "short",
     timeZone: "Europe/Zurich",
   });
+}
+
+function sanitizeBaseUrl(url: string) {
+  // entfernt trailing slash
+  return url.replace(/\/+$/, "");
 }
 
 export async function GET(req: Request) {
@@ -30,7 +36,7 @@ export async function GET(req: Request) {
       return NextResponse.json({ error: "unauthorized" }, { status: 401 });
     }
 
-    // ✅ DIAGNOSE (sicher): zeigt nur Präfixe, keine Keys
+    // ✅ Diagnose: nur Präfixe/URLs, keine Secrets
     const envDiag = {
       supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL ?? null,
       anonPrefix: (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "").slice(0, 15),
@@ -40,28 +46,34 @@ export async function GET(req: Request) {
       appBaseUrl: process.env.APP_BASE_URL ?? null,
     };
 
-    // Falls Supabase Keys nicht wie erwartet aussehen, sofort mit hilfreicher Meldung stoppen
+    // harte ENV Checks (damit Fehler eindeutig sind)
     if (!envDiag.supabaseUrl?.endsWith(".supabase.co")) {
       return NextResponse.json(
-        { error: "env error", detail: "NEXT_PUBLIC_SUPABASE_URL is missing or not a *.supabase.co URL", envDiag },
-        { status: 500 }
-      );
-    }
-    if (!envDiag.anonPrefix.startsWith("sb_publishable_")) {
-      return NextResponse.json(
-        { error: "env error", detail: "NEXT_PUBLIC_SUPABASE_ANON_KEY must start with sb_publishable_", envDiag },
+        {
+          error: "env error",
+          detail: "NEXT_PUBLIC_SUPABASE_URL is missing or not a *.supabase.co URL",
+          envDiag,
+        },
         { status: 500 }
       );
     }
     if (!envDiag.servicePrefix.startsWith("sb_secret_")) {
       return NextResponse.json(
-        { error: "env error", detail: "SUPABASE_SERVICE_ROLE_KEY must start with sb_secret_", envDiag },
+        {
+          error: "env error",
+          detail: "SUPABASE_SERVICE_ROLE_KEY must start with sb_secret_",
+          envDiag,
+        },
         { status: 500 }
       );
     }
     if (!envDiag.resendPrefix.startsWith("re_")) {
       return NextResponse.json(
-        { error: "env error", detail: "RESEND_API_KEY must start with re_", envDiag },
+        {
+          error: "env error",
+          detail: "RESEND_API_KEY must start with re_",
+          envDiag,
+        },
         { status: 500 }
       );
     }
@@ -78,7 +90,9 @@ export async function GET(req: Request) {
       );
     }
 
-    // Supabase (Service Role)
+    const APP_BASE_URL = sanitizeBaseUrl(process.env.APP_BASE_URL!);
+
+    // Supabase (Service Role!)
     const supabase = createClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
       process.env.SUPABASE_SERVICE_ROLE_KEY!,
@@ -88,15 +102,19 @@ export async function GET(req: Request) {
     // Resend
     const resend = new Resend(process.env.RESEND_API_KEY!);
 
-    // 24h Fenster (ab jetzt bis +24h)
+    /**
+     * Zeitfenster:
+     * - wir senden Reminder für Termine, die zwischen "jetzt" und "in 24h" starten
+     * - und nur wenn reminder_sent_at NULL ist
+     */
     const now = new Date();
     const in24h = new Date(Date.now() + 24 * 60 * 60 * 1000);
 
-    // 1) Buchungen holen (ohne Joins)
+    // 1) Buchungen holen (nur minimal nötig)
     const { data: bookings, error: bErr } = await supabase
       .from("bookings")
       .select("id,user_id,slot_id,service_id,status,reminder_sent_at")
-      .eq("status", "BOOKED")          // ⚠️ falls dein Status anders ist, ändern
+      .eq("status", "BOOKED")
       .is("reminder_sent_at", null);
 
     if (bErr) {
@@ -107,12 +125,22 @@ export async function GET(req: Request) {
     }
 
     if (!bookings || bookings.length === 0) {
-      return NextResponse.json({ ok: true, sent: 0, envDiag });
+      return NextResponse.json({ ok: true, sent: 0, details: [], envDiag });
     }
 
     // 2) Slots & Services in Bulk laden
-    const slotIds = [...new Set(bookings.map((b) => b.slot_id))];
-    const serviceIds = [...new Set(bookings.map((b) => b.service_id))];
+    const slotIds = [...new Set(bookings.map((b) => b.slot_id).filter(Boolean))];
+    const serviceIds = [...new Set(bookings.map((b) => b.service_id).filter(Boolean))];
+
+    if (slotIds.length === 0 || serviceIds.length === 0) {
+      return NextResponse.json({
+        ok: true,
+        sent: 0,
+        details: [],
+        envDiag,
+        note: "No slotIds or serviceIds found on bookings.",
+      });
+    }
 
     const { data: slots, error: sErr } = await supabase
       .from("slots")
@@ -138,11 +166,16 @@ export async function GET(req: Request) {
       );
     }
 
-    const slotMap = new Map(slots?.map((s) => [s.id, s]));
-    const serviceMap = new Map(services?.map((s) => [s.id, s]));
+    const slotMap = new Map((slots ?? []).map((s) => [s.id, s]));
+    const serviceMap = new Map((services ?? []).map((s) => [s.id, s]));
 
     let sent = 0;
-    const details: Array<{ bookingId: string; email: string; when: string }> = [];
+    const details: Array<{
+      bookingId: string;
+      email: string;
+      when: string;
+      serviceName: string;
+    }> = [];
 
     // 3) Emails senden
     for (const b of bookings) {
@@ -152,7 +185,7 @@ export async function GET(req: Request) {
       const starts = new Date(slot.starts_at);
       if (starts < now || starts > in24h) continue;
 
-      // Email über Admin API
+      // User email via Admin API
       const { data: userRes, error: uErr } = await supabase.auth.admin.getUserById(b.user_id);
       if (uErr) continue;
 
@@ -172,7 +205,7 @@ Leistung: ${serviceName}
 Zeit: ${when}
 
 Umbuchen/Stornieren:
-${process.env.APP_BASE_URL!}/dashboard
+${APP_BASE_URL}/dashboard
 `,
       });
 
@@ -185,7 +218,7 @@ ${process.env.APP_BASE_URL!}/dashboard
         .eq("id", b.id);
 
       sent++;
-      details.push({ bookingId: b.id, email, when });
+      details.push({ bookingId: b.id, email, when, serviceName });
     }
 
     return NextResponse.json({ ok: true, sent, details, envDiag });
