@@ -35,7 +35,7 @@ function fmtStart(dt: string) {
 }
 
 function labelPhase(vk: "BASELINE" | "FOLLOWUP") {
-  return vk === "BASELINE" ? "Vor Therapie (Baseline)!" : "Nach Therapie (Kontrolle)";
+  return vk === "BASELINE" ? "Vor Therapie (Baseline)" : "Nach Therapie (Kontrolle)";
 }
 
 function labelMod(m: "US" | "MRI") {
