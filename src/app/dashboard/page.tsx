@@ -1,4 +1,4 @@
-"use client";
+'use client';
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
@@ -35,7 +35,7 @@ function fmtStart(dt: string) {
 }
 
 function labelPhase(vk: "BASELINE" | "FOLLOWUP") {
-  return vk === "BASELINE" ? "Vor Therapie (Baseline)" : "Nach Therapie (Kontrolle)";
+  return vk === "BASELINE" ? "Vor Therapie (Baseline)!" : "Nach Therapie (Kontrolle)";
 }
 
 function labelMod(m: "US" | "MRI") {
@@ -234,15 +234,17 @@ export default function DashboardPage() {
       {/* "Alle gebuchten Termine" entfernt */}
 
 
-      <div style={{ marginTop: 22 }}>
+    <div style={{ marginTop: 22 }}>
 
-        <Link href="/admin/slots">Admin: Slots verwalten</Link>
-</div>
+    <Link href="/admin/slots" style={{ display: "block", marginBottom: 8 }}>
+    Admin: Slots verwalten
+    </Link>
 
-<div style={{ marginTop: 12 }}>
-  <Link href="/admin/bookings">Admin: Buchungen ansehen</Link>
-      
-      </div>
+    <Link href="/admin/bookings" style={{ display: "block" }}>
+    Admin: Buchungsübersicht
+    </Link>
+
+    </div>
 
     </main>
   );
