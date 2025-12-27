@@ -233,9 +233,17 @@ export default function DashboardPage() {
 
       {/* "Alle gebuchten Termine" entfernt */}
 
+
       <div style={{ marginTop: 22 }}>
+
         <Link href="/admin/slots">Admin: Slots verwalten</Link>
+</div>
+
+<div style={{ marginTop: 12 }}>
+  <Link href="/admin/bookings">Admin: Buchungen ansehen</Link>
+      
       </div>
+
     </main>
   );
 }
