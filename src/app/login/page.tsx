@@ -41,7 +41,7 @@ export default function LoginPage() {
           </label>
 
           <button type="submit" style={{ padding: 10 }}>
-            Magic Link senden
+            Link zum Login senden
           </button>
 
           {error && <p style={{ color: "crimson" }}>{error}</p>}
