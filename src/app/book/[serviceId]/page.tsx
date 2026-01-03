@@ -5,8 +5,13 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { supabaseBrowser } from "@/lib/supabaseClient";
 
-function fmt(dt: string) {
-  return new Date(dt).toLocaleString("de-CH", { timeZone: "Europe/Zurich" });
+function fmtStart(dt: string) {
+  return new Date(dt).toLocaleString("de-CH", {
+    timeZone: "Europe/Zurich",
+    dateStyle: "short",
+    timeStyle: "short",
+
+  });
 }
 
 export default function BookServicePage() {
@@ -17,9 +22,11 @@ export default function BookServicePage() {
   const [serviceName, setServiceName] = useState<string>("");
   const [slots, setSlots] = useState<{ slot_id: string; starts_at: string; ends_at: string }[]>([]);
   const [loading, setLoading] = useState(true);
+  const [bookingNow, setBookingNow] = useState<string | null>(null);
 
   async function load() {
     setLoading(true);
+
     const { data: session } = await supabase.auth.getSession();
     if (!session.session) {
       window.location.href = "/login";
@@ -36,9 +43,14 @@ export default function BookServicePage() {
   }
 
   async function book(slotId: string) {
+    setBookingNow(slotId);
+
     const { data: session } = await supabase.auth.getSession();
     const user = session.session?.user;
-    if (!user) return;
+    if (!user) {
+      window.location.href = "/login";
+      return;
+    }
 
     const { error } = await supabase.from("bookings").insert({
       user_id: user.id,
@@ -48,9 +60,18 @@ export default function BookServicePage() {
     });
 
     if (error) {
-      alert(error.message);
+      // Postgres unique_violation (Slot oder one_per_service_per_user)
+      const code = (error as any).code;
+      if (code === "23505") {
+        alert("Dieser Slot wurde soeben gebucht oder Sie haben diese Leistung bereits gebucht. Bitte wählen Sie einen anderen Termin!");
+        await load(); // Liste aktualisieren (Slot verschwindet)
+      } else {
+        alert(error.message);
+      }
+      setBookingNow(null);
       return;
     }
+
     window.location.href = "/dashboard";
   }
 
@@ -65,12 +86,10 @@ export default function BookServicePage() {
     <main style={{ padding: 16, maxWidth: 820, margin: "40px auto" }}>
       <Link href="/dashboard">← zurück</Link>
       <h1 style={{ marginTop: 12, fontSize: 20, fontWeight: 700 }}>{serviceName}</h1>
-      <p style={{ marginTop: 8, opacity: 0.85 }}>
-        Bitte wählen Sie einen freien Termin (Dauer: 1 Stunde).
-      </p>
+      <p style={{ marginTop: 8, opacity: 0.85 }}>Bitte wählen Sie einen freien Termin (Dauer: 1 Stunde).</p>
 
       {slots.length === 0 ? (
-        <p style={{ marginTop: 14 }}>Aktuell keine freien Slots verfügbar.</p>
+        <p style={{ marginTop: 14 }}>Aktuell keine freien Slots verfügbar!</p>
       ) : (
         <div style={{ marginTop: 14, display: "grid", gap: 10 }}>
           {slots.map((s) => (
@@ -86,11 +105,14 @@ export default function BookServicePage() {
               }}
             >
               <div>
-                <b>{fmt(s.starts_at)}</b>
-                <div style={{ opacity: 0.8 }}>bis {fmt(s.ends_at)}</div>
+                <b>{fmtStart(s.starts_at)}</b>
               </div>
-              <button onClick={() => book(s.slot_id)} style={{ padding: "10px 12px" }}>
-                Buchen
+              <button
+                onClick={() => book(s.slot_id)}
+                disabled={bookingNow === s.slot_id}
+                style={{ padding: "10px 12px", opacity: bookingNow === s.slot_id ? 0.7 : 1 }}
+              >
+                {bookingNow === s.slot_id ? "Buche…" : "Buchen"}
               </button>
             </div>
           ))}
