@@ -34,10 +34,6 @@ function fmtStart(dt: string) {
   });
 }
 
-function labelPhase(vk: "BASELINE" | "FOLLOWUP") {
-  return vk === "BASELINE" ? "Vor Therapie (Baseline)" : "Nach Therapie (Kontrolle)";
-}
-
 function labelMod(m: "US" | "MRI") {
   return m === "US" ? "Ultraschall" : "MRI";
 }
@@ -63,11 +59,9 @@ export default function DashboardPage() {
     return { total, done };
   }, [services, bookedByService]);
 
-  // NEU: Services nach Phase gruppieren (Baseline / Followup)
   const grouped = useMemo(() => {
     const baseline = services.filter((s) => s.visit_kind === "BASELINE");
     const followup = services.filter((s) => s.visit_kind === "FOLLOWUP");
-    // innerhalb der Phase: US dann MRI (wie vorher)
     const modOrder = (x: Service) => (x.modality === "US" ? 0 : 1);
     baseline.sort((a, b) => modOrder(a) - modOrder(b));
     followup.sort((a, b) => modOrder(a) - modOrder(b));
@@ -91,7 +85,6 @@ export default function DashboardPage() {
       .eq("active", true);
 
     if (!sv.error) {
-      // stabile Reihenfolge: Baseline zuerst, dann Followup; innerhalb: US dann MRI
       const sorted = (sv.data as Service[]).sort((a, b) => {
         const phaseOrder = (x: Service) => (x.visit_kind === "BASELINE" ? 0 : 1);
         const modOrder = (x: Service) => (x.modality === "US" ? 0 : 1);
@@ -142,24 +135,22 @@ export default function DashboardPage() {
     );
   }
 
-  // Helfer: eine "Section" wie im Screenshot (Überschrift + 2 Zeilen)
   function Section({
-    title,
     subtitle,
     items,
+    topMargin,
   }: {
-    title: string;
     subtitle: string;
     items: Service[];
+    topMargin: number;
   }) {
     return (
-      <div style={{ marginTop: 18 }}>
-        <div style={{ fontSize: 22, fontWeight: 700, color: "#9bd0e6" }}>{title}</div>
-        <div style={{ marginTop: 4, fontSize: 18, fontWeight: 700 }}>
+      <div style={{ marginTop: topMargin }}>
+        <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 12 }}>
           {subtitle}
         </div>
 
-        <div style={{ marginTop: 12, display: "grid", gap: 14 }}>
+        <div style={{ display: "grid", gap: 14 }}>
           {items.map((s) => {
             const b = bookedByService.get(s.id);
             const isBooked = !!b;
@@ -184,12 +175,16 @@ export default function DashboardPage() {
                   <div style={{ opacity: 0.8 }}>
                     {labelMod(s.modality)} · Dauer 1h
                   </div>
+                  <div style={{ marginTop: 8, opacity: 0.9 }}>
+                    Status:{" "}
+                    <b>{isBooked ? `gebucht (${fmtStart(b!.starts_at)})` : "noch nicht gebucht"}</b>
+                  </div>
                 </div>
 
                 {!b ? (
                   <Link
                     href={`/book/${s.id}`}
-                    style={{ textDecoration: "underline", fontWeight: 600 }}
+                    style={{ textDecoration: "underline", fontWeight: 700, fontSize: 16 }}
                   >
                     Termin wählen
                   </Link>
@@ -204,9 +199,6 @@ export default function DashboardPage() {
                       textAlign: "right",
                     }}
                   >
-                    <div style={{ minWidth: 140 }}>
-                      <div style={{ fontWeight: 800 }}>{fmtStart(b.starts_at)}</div>
-                    </div>
                     <Link href={`/reschedule/${b.booking_id}`} style={{ textDecoration: "underline" }}>
                       Umbuchen
                     </Link>
@@ -236,46 +228,29 @@ export default function DashboardPage() {
         <div>
           <h1 style={{ fontSize: 22, fontWeight: 700 }}>Studientermine – Übersicht</h1>
           <p style={{ marginTop: 6, opacity: 0.85 }}>Eingeloggt als: {userEmail}</p>
+          <p style={{ marginTop: 6 }}>
+            Fortschritt: <b>{progress.done}</b> / <b>{progress.total}</b> gebucht
+          </p>
         </div>
         <button onClick={logout} style={{ padding: 10 }}>
           Logout
         </button>
       </div>
 
-      <div
-        style={{
-          marginTop: 14,
-          border: "1px solid rgba(255,255,255,0.16)",
-          borderRadius: 12,
-          padding: 12,
-          background: "rgba(255,255,255,0.03)",
-        }}
-      >
-        <div style={{ fontWeight: 700 }}>Studien-Fahrplan</div>
-        <p style={{ marginTop: 6, lineHeight: 1.5, opacity: 0.9 }}>
-          Bitte buchen Sie insgesamt <b>vier separate Termine</b>: je einen Ultraschall und einen MRI<b> vor</b>{" "}
-          Therapiebeginn sowie <b>nach</b> ca. 3,5 Monaten (Kontrolle).
-        </p>
-        <p style={{ marginTop: 8 }}>
-          Fortschritt: <b>{progress.done}</b> / <b>{progress.total}</b> gebucht
-        </p>
-      </div>
-
-      {/* NEU: Übersicht wie im 2. Screenshot, getrennt nach Phase */}
       <Section
-        title="Studientermine"
         subtitle="Buchen Sie 2 Termine vor Therapiebeginn:"
         items={grouped.baseline}
+        topMargin={22}
       />
 
+      {/* Mehr Abstand zwischen den beiden Blöcken */}
       <Section
-        title=""
         subtitle="Buchen Sie 2 Termine 3.5 Monate nach Therapiebeginn:"
         items={grouped.followup}
+        topMargin={46}
       />
 
-      {/* Admin-Links unverändert */}
-      <div style={{ marginTop: 22 }}>
+      <div style={{ marginTop: 28 }}>
         <Link href="/admin/slots" style={{ display: "block", marginBottom: 8 }}>
           Admin: Slots verwalten
         </Link>
