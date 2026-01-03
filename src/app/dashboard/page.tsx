@@ -63,6 +63,17 @@ export default function DashboardPage() {
     return { total, done };
   }, [services, bookedByService]);
 
+  // NEU: Services nach Phase gruppieren (Baseline / Followup)
+  const grouped = useMemo(() => {
+    const baseline = services.filter((s) => s.visit_kind === "BASELINE");
+    const followup = services.filter((s) => s.visit_kind === "FOLLOWUP");
+    // innerhalb der Phase: US dann MRI (wie vorher)
+    const modOrder = (x: Service) => (x.modality === "US" ? 0 : 1);
+    baseline.sort((a, b) => modOrder(a) - modOrder(b));
+    followup.sort((a, b) => modOrder(a) - modOrder(b));
+    return { baseline, followup };
+  }, [services]);
+
   async function load() {
     setLoading(true);
 
@@ -131,6 +142,87 @@ export default function DashboardPage() {
     );
   }
 
+  // Helfer: eine "Section" wie im Screenshot (Überschrift + 2 Zeilen)
+  function Section({
+    title,
+    subtitle,
+    items,
+  }: {
+    title: string;
+    subtitle: string;
+    items: Service[];
+  }) {
+    return (
+      <div style={{ marginTop: 18 }}>
+        <div style={{ fontSize: 22, fontWeight: 700, color: "#9bd0e6" }}>{title}</div>
+        <div style={{ marginTop: 4, fontSize: 18, fontWeight: 700 }}>
+          {subtitle}
+        </div>
+
+        <div style={{ marginTop: 12, display: "grid", gap: 14 }}>
+          {items.map((s) => {
+            const b = bookedByService.get(s.id);
+            const isBooked = !!b;
+
+            return (
+              <div
+                key={s.id}
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr auto",
+                  alignItems: "center",
+                  columnGap: 18,
+                  rowGap: 8,
+                  border: "1px solid rgba(255,255,255,0.16)",
+                  borderRadius: 12,
+                  padding: 14,
+                  background: isBooked ? "rgba(34,197,94,0.18)" : "rgba(255,255,255,0.03)",
+                }}
+              >
+                <div>
+                  <div style={{ fontWeight: 800, fontSize: 18 }}>{s.name}</div>
+                  <div style={{ opacity: 0.8 }}>
+                    {labelMod(s.modality)} · Dauer 1h
+                  </div>
+                </div>
+
+                {!b ? (
+                  <Link
+                    href={`/book/${s.id}`}
+                    style={{ textDecoration: "underline", fontWeight: 600 }}
+                  >
+                    Termin wählen
+                  </Link>
+                ) : (
+                  <div
+                    style={{
+                      display: "flex",
+                      gap: 12,
+                      alignItems: "center",
+                      flexWrap: "wrap",
+                      justifyContent: "flex-end",
+                      textAlign: "right",
+                    }}
+                  >
+                    <div style={{ minWidth: 140 }}>
+                      <div style={{ fontWeight: 800 }}>{fmtStart(b.starts_at)}</div>
+                    </div>
+                    <Link href={`/reschedule/${b.booking_id}`} style={{ textDecoration: "underline" }}>
+                      Umbuchen
+                    </Link>
+                    <button onClick={() => cancel(b.booking_id)} style={{ padding: "8px 10px" }}>
+                      Stornieren
+                    </button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <main style={{ padding: 16, maxWidth: 860, margin: "40px auto" }}>
       <div
@@ -169,83 +261,29 @@ export default function DashboardPage() {
         </p>
       </div>
 
-      <h2 style={{ marginTop: 18, fontSize: 18, fontWeight: 700 }}>Ihre 4 Leistungen</h2>
+      {/* NEU: Übersicht wie im 2. Screenshot, getrennt nach Phase */}
+      <Section
+        title="Studientermine"
+        subtitle="Buchen Sie 2 Termine vor Therapiebeginn:"
+        items={grouped.baseline}
+      />
 
-      <div style={{ marginTop: 12, display: "grid", gap: 12 }}>
-        {services.map((s) => {
-          const b = bookedByService.get(s.id);
-          const isBooked = !!b;
+      <Section
+        title=""
+        subtitle="Buchen Sie 2 Termine 3.5 Monate nach Therapiebeginn:"
+        items={grouped.followup}
+      />
 
-          return (
-            <div
-              key={s.id}
-              style={{
-                border: "1px solid rgba(255,255,255,0.16)",
-                borderRadius: 12,
-                padding: 12,
-                background: isBooked ? "rgba(34,197,94,0.18)" : "rgba(255,255,255,0.03)",
-              }}
-            >
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  gap: 12,
-                  alignItems: "flex-start",
-                }}
-              >
-                <div>
-                  <div style={{ fontWeight: 700 }}>{s.name}</div>
-                  <div style={{ opacity: 0.8 }}>
-                    {labelPhase(s.visit_kind)} · {labelMod(s.modality)} · Dauer 1h
-                  </div>
-                </div>
+      {/* Admin-Links unverändert */}
+      <div style={{ marginTop: 22 }}>
+        <Link href="/admin/slots" style={{ display: "block", marginBottom: 8 }}>
+          Admin: Slots verwalten
+        </Link>
 
-                {!b ? (
-                  <Link href={`/book/${s.id}`}>Termin wählen</Link>
-                ) : (
-                  <div
-                    style={{
-                      display: "flex",
-                      gap: 12,
-                      alignItems: "center",
-                      flexWrap: "wrap",
-                      justifyContent: "flex-end",
-                    }}
-                  >
-                    <div style={{ textAlign: "right" }}>
-                      <div>
-                        <b>{fmtStart(b.starts_at)}</b>
-                      </div>
-                    </div>
-
-                    <Link href={`/reschedule/${b.booking_id}`}>Umbuchen</Link>
-                    <button onClick={() => cancel(b.booking_id)} style={{ padding: "8px 10px" }}>
-                      Stornieren
-                    </button>
-                  </div>
-                )}
-              </div>
-            </div>
-          );
-        })}
+        <Link href="/admin/bookings" style={{ display: "block" }}>
+          Admin: Buchungsübersicht
+        </Link>
       </div>
-
-      {/* "Alle gebuchten Termine" entfernt */}
-
-
-    <div style={{ marginTop: 22 }}>
-
-    <Link href="/admin/slots" style={{ display: "block", marginBottom: 8 }}>
-    Admin: Slots verwalten
-    </Link>
-
-    <Link href="/admin/bookings" style={{ display: "block" }}>
-    Admin: Buchungsübersicht
-    </Link>
-
-    </div>
-
     </main>
   );
 }
