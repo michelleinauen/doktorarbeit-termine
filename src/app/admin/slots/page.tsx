@@ -4,87 +4,99 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { supabaseBrowser } from "@/lib/supabaseClient";
 
-type Service = { id: string; name: string };
-type SlotRow = { id: string; service_id: string; starts_at: string; ends_at: string };
+type AdminSlotRow = {
+  slot_id: string;
+  service_id: string;
+  service_name: string;
+  modality: string; // "US" | "MRI"
+  visit_kind: string; // "BASELINE" | "FOLLOWUP"
+  starts_at: string;
+  ends_at: string;
+  active: boolean;
+  booked: boolean;
+  booked_by_email: string | null;
+  booking_id: string | null;
+};
 
-function addOneHour(iso: string) {
-  const d = new Date(iso);
-  return new Date(d.getTime() + 60 * 60 * 1000).toISOString();
+const ADMIN_EMAILS = ["michelle.inauen@hotmail.com", "login@study-booking.ch"];
+
+function fmtRange(startsAt: string, endsAt: string) {
+  const s = new Date(startsAt).toLocaleString("de-CH", { timeZone: "Europe/Zurich" });
+  const e = new Date(endsAt).toLocaleString("de-CH", { timeZone: "Europe/Zurich" });
+  return `${s} — ${e}`;
 }
 
-function fmt(dt: string) {
-  return new Date(dt).toLocaleString("de-CH", { timeZone: "Europe/Zurich" });
+function labelPhase(vk: string) {
+  return vk === "BASELINE" ? "Vor Therapie" : "Nach Therapie";
+}
+
+function labelMod(m: string) {
+  return m === "US" ? "Ultraschall" : "MRI";
 }
 
 export default function AdminSlotsPage() {
   const supabase = supabaseBrowser();
-  const [services, setServices] = useState<Service[]>([]);
-  const [serviceId, setServiceId] = useState<string>("");
-  const [startsAtLocal, setStartsAtLocal] = useState<string>("");
-  const [slots, setSlots] = useState<SlotRow[]>([]);
-  const [isAdmin, setIsAdmin] = useState<boolean>(false);
 
-  const canCreate = useMemo(() => !!serviceId && !!startsAtLocal, [serviceId, startsAtLocal]);
+  const [loading, setLoading] = useState(true);
+  const [unauthorized, setUnauthorized] = useState(false);
+  const [rows, setRows] = useState<AdminSlotRow[]>([]);
+  const [hideInactive, setHideInactive] = useState(true);
+  const [savingSlotId, setSavingSlotId] = useState<string | null>(null);
+
+  const visible = useMemo(() => {
+    if (!hideInactive) return rows;
+    return rows.filter((r) => r.active);
+  }, [rows, hideInactive]);
 
   async function load() {
-    const { data: session } = await supabase.auth.getSession();
-    if (!session.session) {
+    setLoading(true);
+
+    const { data: sessionRes } = await supabase.auth.getSession();
+    const user = sessionRes.session?.user;
+
+    if (!user) {
       window.location.href = "/login";
       return;
     }
 
-    // admin check
-    const prof = await supabase.from("profiles").select("is_admin").eq("id", session.session.user.id).single();
-    if (prof.error || !prof.data.is_admin) {
-      setIsAdmin(false);
-      return;
-    }
-    setIsAdmin(true);
-
-    const sv = await supabase.from("services").select("id,name").eq("active", true).order("name");
-    if (!sv.error) {
-      setServices(sv.data as Service[]);
-      if (!serviceId && sv.data.length) setServiceId(sv.data[0].id);
-    }
-
-    const sl = await supabase.from("slots").select("id,service_id,starts_at,ends_at").order("starts_at", { ascending: true });
-    if (!sl.error) setSlots(sl.data as SlotRow[]);
-  }
-
-  async function createSlot() {
-    // startsAtLocal ist "YYYY-MM-DDTHH:mm" in Browser-Lokalzeit → als Date interpretieren
-    const start = new Date(startsAtLocal);
-    const end = new Date(start.getTime() + 60 * 60 * 1000);
-
-    const { data: session } = await supabase.auth.getSession();
-    const user = session.session?.user;
-
-    const { error } = await supabase.from("slots").insert({
-      service_id: serviceId,
-      starts_at: start.toISOString(),
-      ends_at: end.toISOString(),
-      capacity: 1,
-      created_by: user?.id ?? null,
-    });
-
-    if (error) alert(error.message);
-    else {
-      setStartsAtLocal("");
-      load();
-    }
-  }
-
-  async function deleteSlot(slotId: string) {
-    // Nur löschen, wenn niemand gebucht hat (sonst DB-Integrität/Studienlogik)
-    const b = await supabase.from("bookings").select("id").eq("slot_id", slotId).eq("status", "BOOKED").limit(1);
-    if (!b.error && (b.data?.length ?? 0) > 0) {
-      alert("Slot kann nicht gelöscht werden: es existiert eine aktive Buchung.");
+    const email = user.email ?? "";
+    if (!ADMIN_EMAILS.includes(email)) {
+      setUnauthorized(true);
+      setLoading(false);
       return;
     }
 
-    const { error } = await supabase.from("slots").delete().eq("id", slotId);
-    if (error) alert(error.message);
-    else load();
+    const { data, error } = await supabase.rpc("get_admin_slots_overview");
+    if (error) {
+      alert("Fehler beim Laden: " + error.message);
+      setLoading(false);
+      return;
+    }
+
+    setRows((data ?? []) as AdminSlotRow[]);
+    setLoading(false);
+  }
+
+  async function disableSlot(slotId: string) {
+    const row = rows.find((r) => r.slot_id === slotId);
+    const msg = row?.booked
+      ? `Dieser Slot ist aktuell gebucht von ${row.booked_by_email ?? "unbekannt"}. Beim Löschen wird die Buchung automatisch storniert und der Slot deaktiviert. Fortfahren?`
+      : "Slot deaktivieren (löschen)?";
+
+    if (!confirm(msg)) return;
+
+    setSavingSlotId(slotId);
+
+    const { error } = await supabase.rpc("admin_disable_slot", { p_slot_id: slotId });
+
+    if (error) {
+      alert(error.message);
+      setSavingSlotId(null);
+      return;
+    }
+
+    await load();
+    setSavingSlotId(null);
   }
 
   useEffect(() => {
@@ -92,64 +104,130 @@ export default function AdminSlotsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  if (!isAdmin) {
+  if (loading) {
     return (
-      <main style={{ padding: 16, maxWidth: 820, margin: "40px auto" }}>
-        <Link href="/dashboard">← zurück</Link>
-        <h1 style={{ marginTop: 12, fontSize: 20, fontWeight: 700 }}>Admin: Slots</h1>
-        <p style={{ marginTop: 10 }}>Kein Admin-Zugriff.</p>
+      <main style={{ padding: 16, maxWidth: 1100, margin: "40px auto" }}>
+        <h1 style={{ fontSize: 22, fontWeight: 700 }}>Admin – Slots</h1>
+        <p style={{ marginTop: 12 }}>Lade…</p>
+      </main>
+    );
+  }
+
+  if (unauthorized) {
+    return (
+      <main style={{ padding: 16, maxWidth: 800, margin: "40px auto" }}>
+        <h1 style={{ fontSize: 22, fontWeight: 700 }}>Kein Zugriff</h1>
+        <p style={{ marginTop: 12 }}>Diese Seite ist nur für Administrator:innen.</p>
+        <div style={{ marginTop: 12 }}>
+          <Link href="/dashboard">← zurück</Link>
+        </div>
       </main>
     );
   }
 
   return (
-    <main style={{ padding: 16, maxWidth: 900, margin: "40px auto" }}>
-      <Link href="/dashboard">← zurück</Link>
-      <h1 style={{ marginTop: 12, fontSize: 20, fontWeight: 700 }}>Admin: Slots verwalten</h1>
-
-      <div style={{ marginTop: 14, border: "1px solid #ddd", borderRadius: 10, padding: 12 }}>
-        <h2 style={{ fontSize: 16, fontWeight: 700 }}>Neuen Slot anlegen (Dauer 1h)</h2>
-
-        <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
-          <label>
-            Dienstleistung
-            <select value={serviceId} onChange={(e) => setServiceId(e.target.value)} style={{ width: "100%", padding: 10, marginTop: 6 }}>
-              {services.map((s) => (
-                <option key={s.id} value={s.id}>{s.name}</option>
-              ))}
-            </select>
-          </label>
-
-          <label>
-            Start (lokale Zeit)
-            <input
-              type="datetime-local"
-              value={startsAtLocal}
-              onChange={(e) => setStartsAtLocal(e.target.value)}
-              style={{ width: "100%", padding: 10, marginTop: 6 }}
-            />
-          </label>
-
-          <button onClick={createSlot} disabled={!canCreate} style={{ padding: 10 }}>
-            Slot erstellen
-          </button>
+    <main style={{ padding: 16, maxWidth: 1100, margin: "40px auto" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
+        <div>
+          <h1 style={{ fontSize: 22, fontWeight: 700 }}>Admin – Slots verwalten</h1>
+          <p style={{ marginTop: 6, opacity: 0.85 }}>
+            {visible.length} Slots in Ansicht (gesamt: {rows.length})
+          </p>
         </div>
+
+        <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <input
+            type="checkbox"
+            checked={hideInactive}
+            onChange={(e) => setHideInactive(e.target.checked)}
+          />
+          Inaktive ausblenden
+        </label>
       </div>
 
-      <h2 style={{ marginTop: 18, fontSize: 16, fontWeight: 700 }}>Alle Slots</h2>
-      <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
-        {slots.map((s) => (
-          <div key={s.id} style={{ border: "1px solid #ddd", borderRadius: 10, padding: 12, display: "flex", justifyContent: "space-between", gap: 12 }}>
-            <div>
-              <div style={{ fontWeight: 700 }}>{services.find(x => x.id === s.service_id)?.name ?? s.service_id}</div>
-              <div>{fmt(s.starts_at)} – {fmt(s.ends_at)}</div>
-            </div>
-            <button onClick={() => deleteSlot(s.id)} style={{ padding: "10px 12px" }}>
-              Löschen
-            </button>
-          </div>
-        ))}
+      <div style={{ marginTop: 10 }}>
+        <Link href="/dashboard">← zurück</Link>
       </div>
+
+      {visible.length === 0 ? (
+        <p style={{ marginTop: 16 }}>Keine Slots in dieser Ansicht.</p>
+      ) : (
+        <div style={{ marginTop: 16, display: "grid", gap: 12 }}>
+          {visible.map((r) => {
+            const badge = r.booked
+              ? { text: `GEBUCHT: ${r.booked_by_email ?? "?"}`, bg: "rgba(234,179,8,0.18)", bd: "rgba(234,179,8,0.35)" }
+              : { text: "FREI", bg: "rgba(34,197,94,0.18)", bd: "rgba(34,197,94,0.35)" };
+
+            return (
+              <div
+                key={r.slot_id}
+                style={{
+                  border: "1px solid rgba(255,255,255,0.16)",
+                  borderRadius: 12,
+                  padding: 12,
+                  background: "rgba(255,255,255,0.03)",
+                  opacity: r.active ? 1 : 0.6,
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start" }}>
+                  <div>
+                    <div style={{ fontWeight: 700 }}>
+                      {r.service_name} · {labelMod(r.modality)} · {labelPhase(r.visit_kind)}
+                    </div>
+                    <div style={{ marginTop: 6, opacity: 0.9 }}>{fmtRange(r.starts_at, r.ends_at)}</div>
+
+                    <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
+                      <span
+                        style={{
+                          display: "inline-block",
+                          padding: "2px 10px",
+                          borderRadius: 999,
+                          fontSize: 11,
+                          border: `1px solid ${badge.bd}`,
+                          background: badge.bg,
+                          letterSpacing: 0.3,
+                        }}
+                      >
+                        {badge.text}
+                      </span>
+
+                      {!r.active && (
+                        <span
+                          style={{
+                            display: "inline-block",
+                            padding: "2px 10px",
+                            borderRadius: 999,
+                            fontSize: 11,
+                            border: "1px solid rgba(255,255,255,0.25)",
+                            background: "rgba(255,255,255,0.06)",
+                            letterSpacing: 0.3,
+                          }}
+                        >
+                          INAKTIV
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8, alignItems: "flex-end" }}>
+                    <button
+                      onClick={() => disableSlot(r.slot_id)}
+                      disabled={savingSlotId === r.slot_id}
+                      style={{
+                        padding: "10px 12px",
+                        opacity: savingSlotId === r.slot_id ? 0.6 : 1,
+                        minWidth: 120,
+                      }}
+                    >
+                      {savingSlotId === r.slot_id ? "…" : "Löschen"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </main>
   );
 }
