@@ -4,6 +4,14 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { supabaseBrowser } from "@/lib/supabaseClient";
 
+type Service = {
+  id: string;
+  name: string;
+  modality: "US" | "MRI";
+  visit_kind: "BASELINE" | "FOLLOWUP";
+  active: boolean;
+};
+
 type AdminSlotRow = {
   slot_id: string;
   service_id: string;
@@ -34,38 +42,95 @@ function labelMod(m: string) {
   return m === "US" ? "Ultraschall" : "MRI";
 }
 
+// datetime-local (Europe/Zurich) -> ISO string
+function toIsoFromLocalDateTime(dtLocal: string) {
+  // dtLocal kommt als "YYYY-MM-DDTHH:mm"
+  // new Date(dtLocal) interpretiert als lokale TZ des Browsers; passt für Europe/Zurich User.
+  // Falls dein Browser nicht Europe/Zurich ist, sag kurz Bescheid, dann machen wir es TZ-sicherer.
+  const d = new Date(dtLocal);
+  return d.toISOString();
+}
+
+function addMinutesIso(iso: string, minutes: number) {
+  const d = new Date(iso);
+  d.setMinutes(d.getMinutes() + minutes);
+  return d.toISOString();
+}
+
 export default function AdminSlotsPage() {
   const supabase = supabaseBrowser();
 
   const [loading, setLoading] = useState(true);
   const [unauthorized, setUnauthorized] = useState(false);
+
+  const [services, setServices] = useState<Service[]>([]);
   const [rows, setRows] = useState<AdminSlotRow[]>([]);
+
   const [hideInactive, setHideInactive] = useState(true);
   const [savingSlotId, setSavingSlotId] = useState<string | null>(null);
+
+  // Create form state
+  const [creating, setCreating] = useState(false);
+  const [newServiceId, setNewServiceId] = useState<string>("");
+  const [newStartsAtLocal, setNewStartsAtLocal] = useState<string>(""); // datetime-local
+  const [durationMin, setDurationMin] = useState<number>(60);
 
   const visible = useMemo(() => {
     if (!hideInactive) return rows;
     return rows.filter((r) => r.active);
   }, [rows, hideInactive]);
 
-  async function load() {
-    setLoading(true);
+  const activeServicesSorted = useMemo(() => {
+    const a = services.filter((s) => s.active !== false);
+    // Baseline zuerst, dann Followup; innerhalb: US dann MRI
+    return a.sort((x, y) => {
+      const phaseOrder = (s: Service) => (s.visit_kind === "BASELINE" ? 0 : 1);
+      const modOrder = (s: Service) => (s.modality === "US" ? 0 : 1);
+      return phaseOrder(x) - phaseOrder(y) || modOrder(x) - modOrder(y) || x.name.localeCompare(y.name);
+    });
+  }, [services]);
 
+  async function guardAdmin() {
     const { data: sessionRes } = await supabase.auth.getSession();
     const user = sessionRes.session?.user;
 
     if (!user) {
       window.location.href = "/login";
-      return;
+      return { ok: false };
     }
 
     const email = user.email ?? "";
     if (!ADMIN_EMAILS.includes(email)) {
       setUnauthorized(true);
+      return { ok: false };
+    }
+
+    return { ok: true };
+  }
+
+  async function load() {
+    setLoading(true);
+
+    const g = await guardAdmin();
+    if (!g.ok) {
       setLoading(false);
       return;
     }
 
+    // Services laden (für neues Slot Formular)
+    const sv = await supabase
+      .from("services")
+      .select("id,name,modality,visit_kind,active")
+      .order("name", { ascending: true });
+
+    if (sv.error) {
+      alert("Fehler Services: " + sv.error.message);
+      setLoading(false);
+      return;
+    }
+    setServices((sv.data ?? []) as Service[]);
+
+    // Slots overview laden
     const { data, error } = await supabase.rpc("get_admin_slots_overview");
     if (error) {
       alert("Fehler beim Laden: " + error.message);
@@ -97,6 +162,50 @@ export default function AdminSlotsPage() {
 
     await load();
     setSavingSlotId(null);
+  }
+
+  async function createSlot() {
+    // Basic validation
+    if (!newServiceId) {
+      alert("Bitte Service auswählen.");
+      return;
+    }
+    if (!newStartsAtLocal) {
+      alert("Bitte Startdatum/-zeit wählen.");
+      return;
+    }
+    if (!durationMin || durationMin < 5) {
+      alert("Bitte eine sinnvolle Dauer wählen (mind. 5 Minuten).");
+      return;
+    }
+
+    setCreating(true);
+
+    try {
+      const startsIso = toIsoFromLocalDateTime(newStartsAtLocal);
+      const endsIso = addMinutesIso(startsIso, durationMin);
+
+      const { error } = await supabase.from("slots").insert({
+        service_id: newServiceId,
+        starts_at: startsIso,
+        ends_at: endsIso,
+        active: true,
+      });
+
+      if (error) {
+        alert("Fehler beim Erstellen: " + error.message);
+        setCreating(false);
+        return;
+      }
+
+      // reset form
+      setNewStartsAtLocal("");
+      setDurationMin(60);
+
+      await load();
+    } finally {
+      setCreating(false);
+    }
   }
 
   useEffect(() => {
@@ -149,14 +258,90 @@ export default function AdminSlotsPage() {
         <Link href="/dashboard">← zurück</Link>
       </div>
 
+      {/* CREATE SLOT */}
+      <section
+        style={{
+          marginTop: 16,
+          border: "1px solid rgba(255,255,255,0.16)",
+          borderRadius: 12,
+          padding: 12,
+          background: "rgba(255,255,255,0.03)",
+        }}
+      >
+        <h2 style={{ fontSize: 16, fontWeight: 700, marginBottom: 10 }}>Neuen Slot hinzufügen</h2>
+
+        <div style={{ display: "grid", gap: 10, gridTemplateColumns: "1.2fr 1fr 0.7fr auto" }}>
+          <div>
+            <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 6 }}>Service</div>
+            <select
+              value={newServiceId}
+              onChange={(e) => setNewServiceId(e.target.value)}
+              style={{ width: "100%", padding: 10 }}
+            >
+              <option value="">Bitte wählen…</option>
+              {activeServicesSorted.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {labelPhase(s.visit_kind)} · {labelMod(s.modality)} — {s.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 6 }}>Start (Zürich)</div>
+            <input
+              type="datetime-local"
+              value={newStartsAtLocal}
+              onChange={(e) => setNewStartsAtLocal(e.target.value)}
+              style={{ width: "100%", padding: 10 }}
+            />
+          </div>
+
+          <div>
+            <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 6 }}>Dauer (Min.)</div>
+            <input
+              type="number"
+              min={5}
+              step={5}
+              value={durationMin}
+              onChange={(e) => setDurationMin(parseInt(e.target.value || "60", 10))}
+              style={{ width: "100%", padding: 10 }}
+            />
+          </div>
+
+          <div style={{ display: "flex", alignItems: "end" }}>
+            <button
+              onClick={createSlot}
+              disabled={creating}
+              style={{ padding: "10px 14px", opacity: creating ? 0.7 : 1, minWidth: 150 }}
+            >
+              {creating ? "Erstelle…" : "Slot hinzufügen"}
+            </button>
+          </div>
+        </div>
+
+        <p style={{ marginTop: 10, fontSize: 12, opacity: 0.8 }}>
+          Hinweis: “Löschen” deaktiviert Slots (active=false) und storniert ggf. aktive Buchungen automatisch.
+        </p>
+      </section>
+
+      {/* LIST */}
       {visible.length === 0 ? (
         <p style={{ marginTop: 16 }}>Keine Slots in dieser Ansicht.</p>
       ) : (
         <div style={{ marginTop: 16, display: "grid", gap: 12 }}>
           {visible.map((r) => {
             const badge = r.booked
-              ? { text: `GEBUCHT: ${r.booked_by_email ?? "?"}`, bg: "rgba(234,179,8,0.18)", bd: "rgba(234,179,8,0.35)" }
-              : { text: "FREI", bg: "rgba(34,197,94,0.18)", bd: "rgba(34,197,94,0.35)" };
+              ? {
+                  text: `GEBUCHT: ${r.booked_by_email ?? "?"}`,
+                  bg: "rgba(234,179,8,0.18)",
+                  bd: "rgba(234,179,8,0.35)",
+                }
+              : {
+                  text: "FREI",
+                  bg: "rgba(34,197,94,0.18)",
+                  bd: "rgba(34,197,94,0.35)",
+                };
 
             return (
               <div
