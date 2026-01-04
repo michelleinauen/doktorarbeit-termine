@@ -2,13 +2,8 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { useParams, useRouter } from "next/navigation";
 import { supabaseBrowser } from "@/lib/supabaseClient";
-
-type SlotRow = {
-  slot_id: string;
-  starts_at: string;
-  ends_at: string;
-};
 
 function fmtStart(dt: string) {
   return new Date(dt).toLocaleString("de-CH", {
@@ -18,15 +13,19 @@ function fmtStart(dt: string) {
   });
 }
 
-export default function ReschedulePage({
-  params,
-}: {
-  params: { bookingId?: string };
-}) {
+type SlotRow = { slot_id: string; starts_at: string; ends_at: string };
+
+export default function ReschedulePage() {
   const supabase = supabaseBrowser();
-  const bookingId = params?.bookingId;
+  const router = useRouter();
+  const params = useParams<{ bookingId?: string | string[] }>();
+
+  // bookingId robust auslesen (string | string[] möglich)
+  const raw = params?.bookingId;
+  const bookingId = Array.isArray(raw) ? raw[0] : raw;
 
   const [serviceName, setServiceName] = useState<string>("");
+  const [serviceId, setServiceId] = useState<string>("");
   const [slots, setSlots] = useState<SlotRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState<string | null>(null);
@@ -34,21 +33,21 @@ export default function ReschedulePage({
   async function load() {
     setLoading(true);
 
-    // 1) Param-Guard: verhindert "uuid: undefined"
-    if (!bookingId || bookingId === "undefined") {
+    // 1) Parameter prüfen
+    if (!bookingId) {
       alert("Fehlender Booking-ID Parameter. Bitte zurück zum Dashboard und erneut umbuchen.");
-      window.location.href = "/dashboard";
+      router.replace("/dashboard");
       return;
     }
 
     // 2) Session prüfen
     const { data: session } = await supabase.auth.getSession();
     if (!session.session) {
-      window.location.href = "/login";
+      router.replace("/login");
       return;
     }
 
-    // 3) Booking laden (inkl. service_id)
+    // 3) Booking holen
     const b = await supabase
       .from("bookings")
       .select("service_id,status")
@@ -57,42 +56,35 @@ export default function ReschedulePage({
 
     if (b.error) {
       alert(b.error.message);
-      window.location.href = "/dashboard";
+      router.replace("/dashboard");
       return;
     }
 
     if (b.data.status !== "BOOKED") {
       alert("Diese Buchung ist nicht mehr aktiv und kann nicht umgebucht werden.");
-      window.location.href = "/dashboard";
+      router.replace("/dashboard");
       return;
     }
 
-    // 4) Service-Namen laden
-    const sv = await supabase
-      .from("services")
-      .select("name")
-      .eq("id", b.data.service_id)
-      .single();
+    setServiceId(b.data.service_id);
 
-    if (!sv.error) setServiceName(sv.data.name ?? "");
+    // 4) Service-Name
+    const sv = await supabase.from("services").select("name").eq("id", b.data.service_id).single();
+    if (!sv.error) setServiceName(sv.data.name);
 
-    // 5) Freie Slots laden (nur freie, kommende Slots)
-    const av = await supabase.rpc("get_available_slots", {
-      p_service_id: b.data.service_id,
-    });
+    // 5) verfügbare Slots
+    const av = await supabase.rpc("get_available_slots", { p_service_id: b.data.service_id });
+    if (!av.error) setSlots(av.data as SlotRow[]);
 
-    if (av.error) {
-      alert(av.error.message);
-      setLoading(false);
-      return;
-    }
-
-    setSlots((av.data ?? []) as SlotRow[]);
     setLoading(false);
   }
 
   async function reschedule(newSlotId: string) {
-    if (!bookingId) return;
+    if (!bookingId) {
+      alert("Fehlender Booking-ID Parameter. Bitte zurück zum Dashboard und erneut umbuchen.");
+      router.replace("/dashboard");
+      return;
+    }
 
     setSaving(newSlotId);
 
@@ -104,7 +96,7 @@ export default function ReschedulePage({
     if (error) {
       const msg = (error.message ?? "").toLowerCase();
 
-      // Konflikt / Unique violation: Slot inzwischen vergeben
+      // Race-condition / bereits belegt
       if (msg.includes("slot already booked") || (error as any).code === "23505") {
         alert("Dieser Slot wurde soeben von jemand anderem gebucht. Bitte wählen Sie einen anderen Termin.");
         setSaving(null);
@@ -117,20 +109,16 @@ export default function ReschedulePage({
       return;
     }
 
-    window.location.href = "/dashboard";
+    router.replace("/dashboard");
   }
 
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [bookingId]);
 
   if (loading) {
-    return (
-      <main style={{ padding: 16, maxWidth: 820, margin: "40px auto" }}>
-        Lade…
-      </main>
-    );
+    return <main style={{ padding: 16, maxWidth: 820, margin: "40px auto" }}>Lade…</main>;
   }
 
   return (
@@ -138,9 +126,8 @@ export default function ReschedulePage({
       <Link href="/dashboard">← zurück</Link>
 
       <h1 style={{ marginTop: 12, fontSize: 20, fontWeight: 700 }}>Umbuchen</h1>
-
       <p style={{ marginTop: 8 }}>
-        Leistung: <b>{serviceName || "—"}</b>
+        Leistung: <b>{serviceName}</b>
       </p>
 
       {slots.length === 0 ? (
@@ -157,8 +144,6 @@ export default function ReschedulePage({
                 display: "flex",
                 justifyContent: "space-between",
                 gap: 12,
-                alignItems: "center",
-                background: "rgba(255,255,255,0.03)",
               }}
             >
               <div>
