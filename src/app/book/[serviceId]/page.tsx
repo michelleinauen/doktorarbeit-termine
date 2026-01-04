@@ -10,9 +10,10 @@ function fmtStart(dt: string) {
     timeZone: "Europe/Zurich",
     dateStyle: "short",
     timeStyle: "short",
-
   });
 }
+
+type SlotRow = { slot_id: string; starts_at: string; ends_at: string };
 
 export default function BookServicePage() {
   const supabase = supabaseBrowser();
@@ -20,7 +21,7 @@ export default function BookServicePage() {
   const serviceId = params.serviceId;
 
   const [serviceName, setServiceName] = useState<string>("");
-  const [slots, setSlots] = useState<{ slot_id: string; starts_at: string; ends_at: string }[]>([]);
+  const [slots, setSlots] = useState<SlotRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [bookingNow, setBookingNow] = useState<string | null>(null);
 
@@ -33,11 +34,16 @@ export default function BookServicePage() {
       return;
     }
 
-    const sv = await supabase.from("services").select("name").eq("id", serviceId).single();
+    const sv = await supabase
+      .from("services")
+      .select("name")
+      .eq("id", serviceId)
+      .single();
+
     if (!sv.error) setServiceName(sv.data.name);
 
     const av = await supabase.rpc("get_available_slots", { p_service_id: serviceId });
-    if (!av.error) setSlots(av.data);
+    if (!av.error) setSlots(av.data as SlotRow[]);
 
     setLoading(false);
   }
@@ -47,11 +53,16 @@ export default function BookServicePage() {
 
     const { data: session } = await supabase.auth.getSession();
     const user = session.session?.user;
+
     if (!user) {
       window.location.href = "/login";
       return;
     }
 
+    // Slot-Daten aus Liste holen (für Email)
+    const chosen = slots.find((x) => x.slot_id === slotId);
+
+    // 1) DB: Buchung anlegen
     const { error } = await supabase.from("bookings").insert({
       user_id: user.id,
       service_id: serviceId,
@@ -60,11 +71,12 @@ export default function BookServicePage() {
     });
 
     if (error) {
-      // Postgres unique_violation (Slot oder one_per_service_per_user)
       const code = (error as any).code;
       if (code === "23505") {
-        alert("Dieser Slot wurde soeben gebucht oder Sie haben diese Leistung bereits gebucht. Bitte wählen Sie einen anderen Termin!");
-        await load(); // Liste aktualisieren (Slot verschwindet)
+        alert(
+          "Dieser Slot wurde soeben gebucht oder Sie haben diese Leistung bereits gebucht. Bitte wählen Sie einen anderen Termin!"
+        );
+        await load(); // Liste aktualisieren
       } else {
         alert(error.message);
       }
@@ -72,6 +84,25 @@ export default function BookServicePage() {
       return;
     }
 
+    // 2) Email Bestätigung (nicht blockierend)
+    // -> wird nur versucht, wenn wir serviceName + slot Zeiten haben
+    const email = user.email;
+    if (email && serviceName && chosen?.starts_at && chosen?.ends_at) {
+      fetch("/api/email/booking-confirmation", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          to: email,
+          serviceName: serviceName,
+          startsAt: chosen.starts_at,
+          endsAt: chosen.ends_at,
+        }),
+      }).catch(() => {
+        // absichtlich ignorieren: Buchung soll nicht scheitern, nur weil Mail nicht ging
+      });
+    }
+
+    // 3) Redirect
     window.location.href = "/dashboard";
   }
 
@@ -80,13 +111,22 @@ export default function BookServicePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [serviceId]);
 
-  if (loading) return <main style={{ padding: 16, maxWidth: 820, margin: "40px auto" }}>Lade…</main>;
+  if (loading) {
+    return (
+      <main style={{ padding: 16, maxWidth: 820, margin: "40px auto" }}>
+        Lade…
+      </main>
+    );
+  }
 
   return (
     <main style={{ padding: 16, maxWidth: 820, margin: "40px auto" }}>
       <Link href="/dashboard">← zurück</Link>
+
       <h1 style={{ marginTop: 12, fontSize: 20, fontWeight: 700 }}>{serviceName}</h1>
-      <p style={{ marginTop: 8, opacity: 0.85 }}>Bitte wählen Sie einen freien Termin (Dauer: 1 Stunde).</p>
+      <p style={{ marginTop: 8, opacity: 0.85 }}>
+        Bitte wählen Sie einen freien Termin (Dauer: 1 Stunde).
+      </p>
 
       {slots.length === 0 ? (
         <p style={{ marginTop: 14 }}>Aktuell keine freien Slots verfügbar!</p>
@@ -107,10 +147,14 @@ export default function BookServicePage() {
               <div>
                 <b>{fmtStart(s.starts_at)}</b>
               </div>
+
               <button
                 onClick={() => book(s.slot_id)}
                 disabled={bookingNow === s.slot_id}
-                style={{ padding: "10px 12px", opacity: bookingNow === s.slot_id ? 0.7 : 1 }}
+                style={{
+                  padding: "10px 12px",
+                  opacity: bookingNow === s.slot_id ? 0.7 : 1,
+                }}
               >
                 {bookingNow === s.slot_id ? "Buche…" : "Buchen"}
               </button>
