@@ -4,6 +4,17 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { supabaseBrowser } from "@/lib/supabaseClient";
 
+/* =========================
+   ADMIN KONFIGURATION
+========================= */
+const ADMIN_EMAILS = [
+  "michelle.inauen@hotmail.com",
+  "login@study-booking.ch",
+];
+
+/* =========================
+   TYPEN
+========================= */
 type Service = {
   id: string;
   name: string;
@@ -23,6 +34,9 @@ type BookingRow = {
   ends_at: string;
 };
 
+/* =========================
+   HELPER
+========================= */
 function fmtStart(dt: string) {
   return new Date(dt).toLocaleString("de-CH", {
     timeZone: "Europe/Zurich",
@@ -34,17 +48,35 @@ function fmtStart(dt: string) {
   });
 }
 
+function labelPhase(vk: "BASELINE" | "FOLLOWUP") {
+  return vk === "BASELINE"
+    ? "Vor Therapie (Baseline)"
+    : "Nach Therapie (Kontrolle)";
+}
+
 function labelMod(m: "US" | "MRI") {
   return m === "US" ? "Ultraschall" : "MRI";
 }
 
+/* =========================
+   PAGE
+========================= */
 export default function DashboardPage() {
   const supabase = supabaseBrowser();
+
   const [userEmail, setUserEmail] = useState<string | null>(null);
   const [services, setServices] = useState<Service[]>([]);
   const [bookings, setBookings] = useState<BookingRow[]>([]);
   const [loading, setLoading] = useState(true);
 
+  /* =========================
+     ADMIN CHECK
+  ========================= */
+  const isAdmin = !!userEmail && ADMIN_EMAILS.includes(userEmail);
+
+  /* =========================
+     BUCHUNGEN PRO SERVICE
+  ========================= */
   const bookedByService = useMemo(() => {
     const m = new Map<string, BookingRow>();
     for (const b of bookings) {
@@ -53,21 +85,9 @@ export default function DashboardPage() {
     return m;
   }, [bookings]);
 
-  const progress = useMemo(() => {
-    const total = services.length;
-    const done = services.filter((s) => bookedByService.has(s.id)).length;
-    return { total, done };
-  }, [services, bookedByService]);
-
-  const grouped = useMemo(() => {
-    const baseline = services.filter((s) => s.visit_kind === "BASELINE");
-    const followup = services.filter((s) => s.visit_kind === "FOLLOWUP");
-    const modOrder = (x: Service) => (x.modality === "US" ? 0 : 1);
-    baseline.sort((a, b) => modOrder(a) - modOrder(b));
-    followup.sort((a, b) => modOrder(a) - modOrder(b));
-    return { baseline, followup };
-  }, [services]);
-
+  /* =========================
+     LOAD
+  ========================= */
   async function load() {
     setLoading(true);
 
@@ -77,6 +97,7 @@ export default function DashboardPage() {
       setLoading(false);
       return;
     }
+
     setUserEmail(user.email ?? null);
 
     const sv = await supabase
@@ -86,9 +107,9 @@ export default function DashboardPage() {
 
     if (!sv.error) {
       const sorted = (sv.data as Service[]).sort((a, b) => {
-        const phaseOrder = (x: Service) => (x.visit_kind === "BASELINE" ? 0 : 1);
-        const modOrder = (x: Service) => (x.modality === "US" ? 0 : 1);
-        return phaseOrder(a) - phaseOrder(b) || modOrder(a) - modOrder(b);
+        const phase = (x: Service) => (x.visit_kind === "BASELINE" ? 0 : 1);
+        const mod = (x: Service) => (x.modality === "US" ? 0 : 1);
+        return phase(a) - phase(b) || mod(a) - mod(b);
       });
       setServices(sorted);
     }
@@ -99,6 +120,9 @@ export default function DashboardPage() {
     setLoading(false);
   }
 
+  /* =========================
+     ACTIONS
+  ========================= */
   async function logout() {
     await supabase.auth.signOut();
     window.location.href = "/login";
@@ -107,7 +131,10 @@ export default function DashboardPage() {
   async function cancel(bookingId: string) {
     const { error } = await supabase
       .from("bookings")
-      .update({ status: "CANCELLED", cancelled_at: new Date().toISOString() })
+      .update({
+        status: "CANCELLED",
+        cancelled_at: new Date().toISOString(),
+      })
       .eq("id", bookingId);
 
     if (error) alert(error.message);
@@ -116,15 +143,18 @@ export default function DashboardPage() {
 
   useEffect(() => {
     load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  if (loading)
+  /* =========================
+     STATES
+  ========================= */
+  if (loading) {
     return (
       <main style={{ padding: 16, maxWidth: 860, margin: "40px auto" }}>
         Lade…
       </main>
     );
+  }
 
   if (!userEmail) {
     return (
@@ -135,101 +165,24 @@ export default function DashboardPage() {
     );
   }
 
-  function Section({
-    subtitle,
-    items,
-    topMargin,
-  }: {
-    subtitle: string;
-    items: Service[];
-    topMargin: number;
-  }) {
-    return (
-      <div style={{ marginTop: topMargin }}>
-        <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 12 }}>
-          {subtitle}
-        </div>
-
-        <div style={{ display: "grid", gap: 14 }}>
-          {items.map((s) => {
-            const b = bookedByService.get(s.id);
-            const isBooked = !!b;
-
-            return (
-              <div
-                key={s.id}
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "1fr auto",
-                  alignItems: "center",
-                  columnGap: 18,
-                  rowGap: 8,
-                  border: "1px solid rgba(255,255,255,0.16)",
-                  borderRadius: 12,
-                  padding: 14,
-                  background: isBooked ? "rgba(34,197,94,0.18)" : "rgba(255,255,255,0.03)",
-                }}
-              >
-                <div>
-                  <div style={{ fontWeight: 800, fontSize: 18 }}>{s.name}</div>
-                  <div style={{ opacity: 0.8 }}>
-                    {labelMod(s.modality)} · Dauer 1h
-                  </div>
-                  <div style={{ marginTop: 8, opacity: 0.9 }}>
-                    Status:{" "}
-                    <b>{isBooked ? `gebucht (${fmtStart(b!.starts_at)})` : "noch nicht gebucht"}</b>
-                  </div>
-                </div>
-
-                {!b ? (
-                  <Link
-                    href={`/book/${s.id}`}
-                    style={{ textDecoration: "underline", fontWeight: 700, fontSize: 16 }}
-                  >
-                    Termin wählen
-                  </Link>
-                ) : (
-                  <div
-                    style={{
-                      display: "flex",
-                      gap: 12,
-                      alignItems: "center",
-                      flexWrap: "wrap",
-                      justifyContent: "flex-end",
-                      textAlign: "right",
-                    }}
-                  >
-                    <Link href={`/reschedule/${b.booking_id}`} style={{ textDecoration: "underline" }}>
-                      Umbuchen
-                    </Link>
-                    <button onClick={() => cancel(b.booking_id)} style={{ padding: "8px 10px" }}>
-                      Stornieren
-                    </button>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      </div>
-    );
-  }
-
+  /* =========================
+     RENDER
+  ========================= */
   return (
     <main style={{ padding: 16, maxWidth: 860, margin: "40px auto" }}>
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          gap: 12,
-          alignItems: "center",
-        }}
-      >
+      {/* HEADER */}
+      <div style={{ display: "flex", justifyContent: "space-between" }}>
         <div>
-          <h1 style={{ fontSize: 22, fontWeight: 700 }}>Studientermine – Übersicht</h1>
-          <p style={{ marginTop: 6, opacity: 0.85 }}>Eingeloggt als: {userEmail}</p>
-          <p style={{ marginTop: 6 }}>
-            Fortschritt: <b>{progress.done}</b> / <b>{progress.total}</b> gebucht
+          <h1 style={{ fontSize: 22, fontWeight: 700 }}>
+            Studientermine – Übersicht
+          </h1>
+          <p style={{ opacity: 0.85 }}>
+            Eingeloggt als: {userEmail}
+            {isAdmin && (
+              <span style={{ marginLeft: 8, fontSize: 12, opacity: 0.6 }}>
+                (Administrator)
+              </span>
+            )}
           </p>
         </div>
         <button onClick={logout} style={{ padding: 10 }}>
@@ -237,28 +190,112 @@ export default function DashboardPage() {
         </button>
       </div>
 
-      <Section
-        subtitle="Buchen Sie 2 Termine vor Therapiebeginn:"
-        items={grouped.baseline}
-        topMargin={22}
-      />
+      {/* =========================
+          VOR THERAPIE
+      ========================= */}
+      <h2 style={{ marginTop: 28, fontSize: 18, fontWeight: 700 }}>
+        Untersuchungen vor Therapiebeginn
+      </h2>
 
-      {/* Mehr Abstand zwischen den beiden Blöcken */}
-      <Section
-        subtitle="Buchen Sie 2 Termine 3.5 Monate nach Therapiebeginn:"
-        items={grouped.followup}
-        topMargin={46}
-      />
-
-      <div style={{ marginTop: 28 }}>
-        <Link href="/admin/slots" style={{ display: "block", marginBottom: 8 }}>
-          Admin: Slots verwalten
-        </Link>
-
-        <Link href="/admin/bookings" style={{ display: "block" }}>
-          Admin: Buchungsübersicht
-        </Link>
+      <div style={{ marginTop: 12, display: "grid", gap: 12 }}>
+        {services
+          .filter((s) => s.visit_kind === "BASELINE")
+          .map((s) => {
+            const b = bookedByService.get(s.id);
+            return (
+              <ServiceCard
+                key={s.id}
+                service={s}
+                booking={b}
+                onCancel={cancel}
+              />
+            );
+          })}
       </div>
+
+      {/* =========================
+          NACH THERAPIE
+      ========================= */}
+      <h2 style={{ marginTop: 40, fontSize: 18, fontWeight: 700 }}>
+        Untersuchungen nach Therapie (Kontrolle)
+      </h2>
+
+      <div style={{ marginTop: 12, display: "grid", gap: 12 }}>
+        {services
+          .filter((s) => s.visit_kind === "FOLLOWUP")
+          .map((s) => {
+            const b = bookedByService.get(s.id);
+            return (
+              <ServiceCard
+                key={s.id}
+                service={s}
+                booking={b}
+                onCancel={cancel}
+              />
+            );
+          })}
+      </div>
+
+      {/* =========================
+          ADMIN LINKS (NUR ADMIN)
+      ========================= */}
+      {isAdmin && (
+        <div style={{ marginTop: 40 }}>
+          <Link href="/admin/slots" style={{ display: "block", marginBottom: 8 }}>
+            Admin: Slots verwalten
+          </Link>
+          <Link href="/admin/bookings">
+            Admin: Buchungsübersicht
+          </Link>
+        </div>
+      )}
     </main>
+  );
+}
+
+/* =========================
+   SERVICE CARD
+========================= */
+function ServiceCard({
+  service,
+  booking,
+  onCancel,
+}: {
+  service: Service;
+  booking?: BookingRow;
+  onCancel: (id: string) => void;
+}) {
+  return (
+    <div
+      style={{
+        border: "1px solid rgba(255,255,255,0.16)",
+        borderRadius: 12,
+        padding: 12,
+        background: booking
+          ? "rgba(34,197,94,0.18)"
+          : "rgba(255,255,255,0.03)",
+      }}
+    >
+      <div style={{ display: "flex", justifyContent: "space-between" }}>
+        <div>
+          <div style={{ fontWeight: 700 }}>{service.name}</div>
+          <div style={{ opacity: 0.8 }}>
+            {labelMod(service.modality)} · Dauer 1h
+          </div>
+        </div>
+
+        {!booking ? (
+          <Link href={`/book/${service.id}`}>Termin wählen</Link>
+        ) : (
+          <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+            <b>{fmtStart(booking.starts_at)}</b>
+            <Link href={`/reschedule/${booking.booking_id}`}>Umbuchen</Link>
+            <button onClick={() => onCancel(booking.booking_id)}>
+              Stornieren
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
